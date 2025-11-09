@@ -1,125 +1,107 @@
 import os
+import json
 import time
 import requests
-from fastapi import FastAPI, UploadFile, Form, HTTPException
-from fastapi.middleware.cors import CORSMiddleware
-from uuid import uuid4
-from dotenv import load_dotenv
+from fastapi import FastAPI, File, Form, UploadFile
 from google.oauth2 import service_account
 from google.auth.transport.requests import Request
 
-# -------------------------------------------------------
-# Load environment variables
-# -------------------------------------------------------
-load_dotenv()
-
-GOOGLE_API_KEY = os.getenv("GOOGLE_API_KEY")
-
-# ⚠️ Use double backslashes OR forward slashes for Windows paths
-GOOGLE_CREDENTIALS_PATH = r"C:\Users\rohan\Downloads\pinecraft-ai-af5d1a4cb868.json"
-
-# Load service account credentials if available
-credentials = None
-if os.path.exists(GOOGLE_CREDENTIALS_PATH):
-    credentials = service_account.Credentials.from_service_account_file(GOOGLE_CREDENTIALS_PATH)
-    print("✅ Loaded Google service account credentials.")
-else:
-    print("⚠️ Using only API key auth (no service account found).")
-
-# -------------------------------------------------------
-# FastAPI App Setup
-# -------------------------------------------------------
 app = FastAPI()
 
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
+# ────────────────────────────────────────────────
+# 🔐 Load Google credentials
+# ────────────────────────────────────────────────
+SERVICE_ACCOUNT_PATH = r"C:\Users\rohan\Downloads\pinecraft-ai-af5d1a4cb868.json"
+PROJECT_ID = "pinecraft-ai"
+LOCATION = "us-central1"
+MODEL_ID = "veo-3.0-generate-001"
+
+credentials = service_account.Credentials.from_service_account_file(
+    SERVICE_ACCOUNT_PATH,
+    scopes=["https://www.googleapis.com/auth/cloud-platform"],
 )
 
-# -------------------------------------------------------
-# Generate Video Endpoint
-# -------------------------------------------------------
-@app.post("/generate")
-async def generate_video(text: str = Form(...), audio_file: UploadFile = None):
-    """
-    Generates a 30-second AI video using Google Veo 3 with uploaded audio + script text.
-    """
-    if not audio_file:
-        raise HTTPException(status_code=400, detail="Audio file missing")
+# ────────────────────────────────────────────────
+# 🔁 Helper: Get access token
+# ────────────────────────────────────────────────
+def get_access_token():
+    credentials.refresh(Request())
+    return credentials.token
 
-    # Save uploaded audio locally
-    local_audio_path = f"temp_{uuid4()}_{audio_file.filename}"
-    with open(local_audio_path, "wb") as f:
+# ────────────────────────────────────────────────
+# 🧩 Video Generation Endpoint
+# ────────────────────────────────────────────────
+@app.post("/generate")
+async def generate_video(
+    audio_file: UploadFile = File(...),  # 👈 match Node.js field name
+    text: str = Form(...)                # 👈 match Node.js field name
+):
+    print(f"🎧 Received audio file: {audio_file.filename}")
+    print(f"📝 Text prompt: {text}")
+
+    # Save the audio file temporarily
+    audio_path = f"temp_{audio_file.filename}"
+    with open(audio_path, "wb") as f:
         f.write(await audio_file.read())
 
-    print(f"🎧 Received audio file: {local_audio_path}")
-    print(f"📝 Prompt: {text}")
-
-    # Prepare auth headers
-    headers = {}
-    if credentials:
-        credentials.refresh(Request())
-        headers["Authorization"] = f"Bearer {credentials.token}"
-    elif GOOGLE_API_KEY:
-        headers["x-goog-api-key"] = GOOGLE_API_KEY
-    else:
-        raise HTTPException(status_code=500, detail="Missing Google credentials")
-
-    # Prepare Veo-3 API payload
-    veo_api_url = "https://generativelanguage.googleapis.com/v1beta/models/veo-3:generateVideo"
-    payload = {
-        "model": "veo-3",
-        "prompt": text,
-        "duration": 30,
-        "aspect_ratio": "9:16",
-    }
-
-    files = {
-        "audio": (os.path.basename(local_audio_path), open(local_audio_path, "rb"), "audio/mpeg")
-    }
-
-    # Call the Veo-3 API
-    response = requests.post(veo_api_url, headers=headers, data=payload, files=files)
-
-    if response.status_code != 200:
-        print("❌ Veo-3 Error:", response.text)
-        os.remove(local_audio_path)
-        raise HTTPException(status_code=500, detail=f"Veo 3 API error: {response.text}")
-
-    data = response.json()
-    operation_id = data.get("name")
-    print(f"🎬 Video generation started (operation ID: {operation_id})")
-
-    # Poll for completion
-    video_url = None
-    for attempt in range(20):
-        poll = requests.get(
-            f"https://generativelanguage.googleapis.com/v1beta/{operation_id}",
-            headers=headers,
+    try:
+        access_token = get_access_token()
+        endpoint = (
+            f"https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/"
+            f"locations/{LOCATION}/publishers/google/models/{MODEL_ID}:predictLongRunning"
         )
-        poll_data = poll.json()
 
-        if "response" in poll_data and "videoUri" in poll_data["response"]:
-            video_url = poll_data["response"]["videoUri"]
-            break
+        headers = {
+            "Authorization": f"Bearer {access_token}",
+            "Content-Type": "application/json",
+        }
 
-        print(f"⏳ Waiting for video… ({attempt + 1}/20)")
-        time.sleep(5)
+        # Build the Vertex AI request payload
+        payload = {
+            "instances": [
+                {
+                    "prompt": text,          # 👈 use the text field
+                    "aspectRatio": "9:16",
+                    "resolution": "720p",
+                }
+            ],
+            "parameters": {
+                "responseCount": 1
+            }
+        }
 
-    os.remove(local_audio_path)
+        # ────────────────────────────────────────────────
+        # 🚀 Send the video generation request
+        # ────────────────────────────────────────────────
+        response = requests.post(endpoint, headers=headers, data=json.dumps(payload))
+        if response.status_code != 200:
+            print(f"❌ Request Error: {response.text}")
+            return {"error": response.text}
 
-    if not video_url:
-        raise HTTPException(status_code=504, detail="Video generation timed out")
+        operation = response.json()
+        operation_name = operation.get("name")
+        print(f"🎬 Operation started: {operation_name}")
 
-    print(f"✅ Video ready: {video_url}")
-    return {"message": "Video generated successfully", "url": video_url}
+        # ────────────────────────────────────────────────
+        # ⏳ Poll until video is ready
+        # ────────────────────────────────────────────────
+        op_url = f"https://{LOCATION}-aiplatform.googleapis.com/v1/{operation_name}"
+        while True:
+            op_res = requests.get(op_url, headers=headers)
+            result = op_res.json()
+            if result.get("done"):
+                print("✅ Video generation complete!")
+                break
+            print("⏳ Waiting for video to be ready...")
+            time.sleep(10)
 
-# -------------------------------------------------------
-# Run Locally
-# -------------------------------------------------------
-if __name__ == "__main__":
-    import uvicorn
-    uvicorn.run("video_services:app", host="0.0.0.0", port=8001, reload=True)
+        # ────────────────────────────────────────────────
+        # 🎥 Return video URI
+        # ────────────────────────────────────────────────
+        output = result.get("response", {}).get("predictions", [{}])[0]
+        video_uri = output.get("videoUri")
+        return {"url": video_uri or "No URI found"}
+
+    except Exception as e:
+        print(f"❌ Exception: {e}")
+        return {"error": str(e)}
