@@ -12,7 +12,7 @@ export async function generateVideo(scriptText, voiceUrl) {
 
     // Create FormData for upload
     const formData = new FormData();
-    formData.append("text", scriptText);
+    formData.append("text", scriptText); // ✅ Matches Python
     formData.append("audio_file", Buffer.from(audioResponse.data), {
       filename: "voice.mp3",
       contentType: "audio/mpeg",
@@ -23,7 +23,8 @@ export async function generateVideo(scriptText, voiceUrl) {
       headers: formData.getHeaders(),
     });
 
-    return { url: response.data.url };
+    console.log("✅ Video generation response:", response.data);
+    return { url: response.data.video_uri || response.data.url };
   } catch (error) {
     console.error("❌ Error generating video:", error.response?.data || error.message);
     throw new Error("Video generation failed");

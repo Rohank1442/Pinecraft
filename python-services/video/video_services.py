@@ -1,6 +1,5 @@
 import os
 import json
-import time
 import requests
 from fastapi import FastAPI, File, Form, UploadFile
 from google.oauth2 import service_account
@@ -9,46 +8,51 @@ from google.auth.transport.requests import Request
 app = FastAPI()
 
 # ────────────────────────────────────────────────
-# 🔐 Load Google credentials
+# 🔐 Google Cloud Setup
 # ────────────────────────────────────────────────
-SERVICE_ACCOUNT_PATH = r"C:\Users\rohan\Downloads\pinecraft-ai-af5d1a4cb868.json"
+SERVICE_ACCOUNT_PATH = r"C:\Users\rohan\Downloads\pinecraft-ai-6a82b64d0911.json"  # ✅ Use your actual JSON file path
 PROJECT_ID = "pinecraft-ai"
 LOCATION = "us-central1"
 MODEL_ID = "veo-3.0-generate-001"
 
+# Load service account credentials
 credentials = service_account.Credentials.from_service_account_file(
     SERVICE_ACCOUNT_PATH,
     scopes=["https://www.googleapis.com/auth/cloud-platform"],
 )
 
 # ────────────────────────────────────────────────
-# 🔁 Helper: Get access token
+# 🔁 Helper: Get Access Token
 # ────────────────────────────────────────────────
 def get_access_token():
     credentials.refresh(Request())
     return credentials.token
 
+
 # ────────────────────────────────────────────────
-# 🧩 Video Generation Endpoint
+# 🎥 Video Generation Endpoint
 # ────────────────────────────────────────────────
 @app.post("/generate")
 async def generate_video(
-    audio_file: UploadFile = File(...),  # 👈 match Node.js field name
-    text: str = Form(...)                # 👈 match Node.js field name
+    audio_file: UploadFile = File(...),
+    text: str = Form(...)
 ):
     print(f"🎧 Received audio file: {audio_file.filename}")
     print(f"📝 Text prompt: {text}")
 
-    # Save the audio file temporarily
+    # Save audio temporarily (optional)
     audio_path = f"temp_{audio_file.filename}"
     with open(audio_path, "wb") as f:
         f.write(await audio_file.read())
 
     try:
+        # ────────────────────────────────────────────────
+        # 🚀 Call Veo model directly with predict
+        # ────────────────────────────────────────────────
         access_token = get_access_token()
         endpoint = (
-            f"https://{LOCATION}-aiplatform.googleapis.com/v1/projects/{PROJECT_ID}/"
-            f"locations/{LOCATION}/publishers/google/models/{MODEL_ID}:predictLongRunning"
+            f"https://{LOCATION}-aiplatform.googleapis.com/v1/"
+            f"projects/{PROJECT_ID}/locations/{LOCATION}/publishers/google/models/{MODEL_ID}:predict"
         )
 
         headers = {
@@ -56,52 +60,55 @@ async def generate_video(
             "Content-Type": "application/json",
         }
 
-        # Build the Vertex AI request payload
+        # Build the payload for Veo 3.0 video generation
         payload = {
             "instances": [
                 {
-                    "prompt": text,          # 👈 use the text field
+                    "prompt": text,
                     "aspectRatio": "9:16",
                     "resolution": "720p",
                 }
             ],
-            "parameters": {
-                "responseCount": 1
-            }
+            "parameters": {"responseCount": 1},
         }
 
-        # ────────────────────────────────────────────────
-        # 🚀 Send the video generation request
-        # ────────────────────────────────────────────────
         response = requests.post(endpoint, headers=headers, data=json.dumps(payload))
+
         if response.status_code != 200:
             print(f"❌ Request Error: {response.text}")
             return {"error": response.text}
 
-        operation = response.json()
-        operation_name = operation.get("name")
-        print(f"🎬 Operation started: {operation_name}")
+        result = response.json()
 
         # ────────────────────────────────────────────────
-        # ⏳ Poll until video is ready
+        # 🎥 Extract and return the video URI
         # ────────────────────────────────────────────────
-        op_url = f"https://{LOCATION}-aiplatform.googleapis.com/v1/{operation_name}"
-        while True:
-            op_res = requests.get(op_url, headers=headers)
-            result = op_res.json()
-            if result.get("done"):
-                print("✅ Video generation complete!")
-                break
-            print("⏳ Waiting for video to be ready...")
-            time.sleep(10)
+        try:
+            predictions = result.get("predictions", [])
+            if not predictions:
+                print("⚠️ No predictions in response")
+                print("Raw response:", result)
+                return {"error": "No predictions found"}
 
-        # ────────────────────────────────────────────────
-        # 🎥 Return video URI
-        # ────────────────────────────────────────────────
-        output = result.get("response", {}).get("predictions", [{}])[0]
-        video_uri = output.get("videoUri")
-        return {"url": video_uri or "No URI found"}
+            output = predictions[0]
+            video_uri = (
+                output.get("videoUri")
+                or output.get("uri")
+                or "No video URI found in response"
+            )
+
+            print(f"📽️ Final video URI: {video_uri}")
+            return {"video_uri": video_uri}
+
+        except Exception as parse_error:
+            print(f"❌ Error parsing video response: {parse_error}")
+            print("Raw response:", result)
+            return {"error": str(parse_error)}
 
     except Exception as e:
         print(f"❌ Exception: {e}")
         return {"error": str(e)}
+
+    finally:
+        if os.path.exists(audio_path):
+            os.remove(audio_path)
