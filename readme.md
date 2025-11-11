@@ -1,5 +1,3 @@
-Absolutely ✅ — here’s your **ready-to-copy** `README.md` file, perfectly formatted in Markdown syntax:
-
 ---
 
 ```markdown
@@ -153,17 +151,6 @@ uvicorn video_services:app --reload --port 8001
 | Dependencies      | `torch`, `diffusers`, `requests`, `fastapi`, `ffmpeg-python` |
 
 ---
-
-## 📦 Example API Usage
-
-**Endpoint:** `/generate`
-
-**Request (POST via FormData):**
-
-```
-text: "A cinematic mountain landscape with glowing sunrays"
-audio_file: (mp3 file upload)
-```
 
 ```
 
